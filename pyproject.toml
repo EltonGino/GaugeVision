@@ -1,0 +1,13 @@
+[project]
+name = "gaugevision"
+version = "0.1.0"
+description = "Industrial visual-inspection pipeline for threaded parts: classical metrology + deep anomaly detection fused into an auditable Go/No-Go decision."
+requires-python = ">=3.11,<3.12"
+readme = "docs/README.md"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.setuptools.packages.find]
+include = ["gaugevision*"]

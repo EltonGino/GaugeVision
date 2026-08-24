@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Data (downloaded/cached, not versioned)
+data/cache/
+data/mvtec_ad/
+data/raw/
+*.h5
+*.pt
+*.onnx
+!edge/cpp/models/.gitkeep
+
+# fiftyone local DB
+.fiftyone/
+
+# Model artifacts
+models/
+*.ckpt
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+
+# Docker
+*.log
+
+# Notebooks checkpoints
+.ipynb_checkpoints/
+
+# C++ build
+edge/cpp/build/
