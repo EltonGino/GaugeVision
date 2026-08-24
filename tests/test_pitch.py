@@ -44,7 +44,46 @@ def test_peak_pitch_estimator_flat_signal_no_peaks():
     assert estimate.pitch_px is None
 
 
-def test_fft_pitch_estimator_not_implemented_in_phase1():
+def test_fft_pitch_estimator_clean_signal():
     profile = _synthetic_profile(period_px=12.0)
-    with pytest.raises(NotImplementedError):
-        FFTPitchEstimator().estimate(profile)
+    estimate = FFTPitchEstimator().estimate(profile)
+    assert estimate.pitch_px is not None
+    assert estimate.pitch_px == pytest.approx(12.0, abs=1.0)
+    assert estimate.confidence > 0.5
+
+
+def test_fft_pitch_estimator_noisy_signal_lower_confidence():
+    clean = _synthetic_profile(period_px=12.0)
+    noisy = _synthetic_profile(period_px=12.0, noise_std=6.0, seed=1)
+    clean_est = FFTPitchEstimator().estimate(clean)
+    noisy_est = FFTPitchEstimator().estimate(noisy)
+    assert noisy_est.confidence <= clean_est.confidence
+
+
+def test_fft_pitch_estimator_too_short_signal():
+    profile = ThreadProfile(signal=np.array([1.0, 2.0, 1.0]), axis_positions_px=np.arange(3))
+    estimate = FFTPitchEstimator().estimate(profile)
+    assert estimate.pitch_px is None
+    assert estimate.confidence == 0.0
+
+
+def test_fft_pitch_estimator_flat_signal_low_confidence():
+    profile = ThreadProfile(signal=np.full(64, 10.0), axis_positions_px=np.arange(64))
+    estimate = FFTPitchEstimator().estimate(profile)
+    # A flat signal has an all-zero (or near-zero) spectrum after detrending;
+    # whatever bin the argmax lands on should not be reported as confident.
+    assert estimate.confidence < 0.3
+
+
+def test_fft_pitch_estimator_ignores_slow_taper():
+    """A slowly varying baseline (taper) plus a real periodic oscillation
+    should still recover the oscillation's period, not the taper."""
+    period_px = 10.0
+    n = int(period_px * 15)
+    x = np.arange(n)
+    taper = 40.0 - 0.1 * x  # much slower variation than the thread period
+    oscillation = 4.0 * np.sin(2 * np.pi * x / period_px)
+    profile = ThreadProfile(signal=taper + oscillation, axis_positions_px=x)
+    estimate = FFTPitchEstimator().estimate(profile)
+    assert estimate.pitch_px is not None
+    assert estimate.pitch_px == pytest.approx(period_px, abs=1.5)

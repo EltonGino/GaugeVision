@@ -1,9 +1,11 @@
 """Anomaly-detection evaluation — CLAUDE.md §4.3.
 
-Deliberately separate from inference logic (``padim.py``): this module only
-consumes a fitted model's scores against ground-truth labels. Image-level
-AUROC is the metric benchmarked here — CLAUDE.md is explicit that image-level
-and pixel-level AUROC are different numbers that are easy to conflate across
+Deliberately separate from inference logic (``padim.py``, ``patchcore.py``):
+this module only consumes a fitted model's scores against ground-truth
+labels, and works identically for either model (anything with a ``predict(
+image, threshold=...) -> AnomalyResult`` method). Image-level AUROC is the
+metric benchmarked here — CLAUDE.md is explicit that image-level and
+pixel-level AUROC are different numbers that are easy to conflate across
 papers, so any comparison against published PaDiM/PatchCore results must cite
 the specific table, method, backbone, and metric it was read from.
 """
@@ -11,11 +13,16 @@ the specific table, method, backbone, and metric it was read from.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
 import numpy as np
 from sklearn.metrics import roc_auc_score, roc_curve
 
-from gaugevision.anomaly.padim import PaDiM
+from gaugevision.anomaly.types import AnomalyResult
+
+
+class AnomalyModel(Protocol):
+    def predict(self, image: np.ndarray, threshold: float | None = None) -> AnomalyResult: ...
 
 
 @dataclass(frozen=True)
@@ -29,9 +36,9 @@ class EvaluationResult:
 
 
 def evaluate_image_level_auroc(
-    model: PaDiM, images: list[np.ndarray], labels: list[int]
+    model: AnomalyModel, images: list[np.ndarray], labels: list[int]
 ) -> EvaluationResult:
-    """Compute image-level AUROC for a fitted PaDiM model on labeled images.
+    """Compute image-level AUROC for a fitted anomaly model on labeled images.
 
     Args:
         images: test images (mix of normal and defective).

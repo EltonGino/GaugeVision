@@ -12,16 +12,20 @@ detection, optimized inference, API/container serving) behind that kind of
 industrial-inspection system, using an openly available screw dataset instead
 of pretending to have access to proprietary hardware or data.
 
-## Current status: Phase 3 — video input
+## Current status: Phase 4 — depth pass
 
-The full architecture (see below) is wired end-to-end on stable interfaces:
-`image → measurement pipeline → anomaly detection → decision fusion → FastAPI
-→ Docker → Gradio` (Phase 1), a benchmarked PyTorch-vs-ONNX-Runtime CPU
-inference path (Phase 2, see `docs/RESULTS.md`), and file-based video input
-with an annotated output video and temporal aggregation (Phase 3, §4.7
-below). Validation depth (synthetic-ground-truth measurement error, a second
-pitch-estimation strategy, PatchCore) is still layered in over the remaining
-phases described in `CLAUDE.md`.
+The full architecture is wired end-to-end: `image → measurement pipeline →
+anomaly detection → decision fusion → FastAPI → Docker → Gradio` (Phase 1),
+a benchmarked PyTorch-vs-ONNX-Runtime CPU inference path (Phase 2), and
+file-based video input with an annotated output video and temporal
+aggregation (Phase 3). Phase 4 adds the validation depth CLAUDE.md scoped for
+this stage: a synthetic thread generator with known ground truth,
+`FFTPitchEstimator` implemented and quantitatively compared against
+`PeakPitchEstimator`, a PatchCore anomaly-detection stretch model benchmarked
+against PaDiM, and a validated calibration source used within that
+validation harness. **All real numbers are in `docs/RESULTS.md`** — several
+Phase 4 findings genuinely changed decisions rather than just confirming
+Phase 1/2/3 choices (see Known Limitations below).
 
 ## Architecture
 
@@ -64,39 +68,59 @@ Two calibration concepts are kept deliberately separate (CLAUDE.md §4.1):
   `MetricCalibration` class; no bare pixel/constant division is scattered
   through measurement code.
 
-## Known Phase-1 limitations (read before trusting a number)
+## Known limitations (read before trusting a number)
 
-- **Measurements are not dimensionally validated.** MVTec AD provides no
-  physical scale reference, so Phase 1 uses a configured demonstration
-  `MetricCalibration` (`px_per_mm=32.4`, `source="demo_reference"`). Every
-  `MeasurementResult` has `calibrated=False` and carries this fact in its
-  `notes`. Phase 4 replaces this with a scale validated against a synthetic
-  thread generator with known ground truth.
-- **Only one pitch estimator is implemented** (`PeakPitchEstimator`, spacing
-  between thread-crest peaks). `FFTPitchEstimator` exists as an interface stub
-  and raises `NotImplementedError` — it's a Phase 4 deliverable, along with
-  the quantitative Peak-vs-FFT comparison table.
-- **Pitch estimation does not reliably fire on real MVTec images** (0/15
-  sampled test images produced a pitch estimate; `confidence=0.0`,
-  `pitch_px=None`). Diagnosis: the per-row silhouette-width signal
-  (`profile.compute_width_profile`) is dominated by the screw's overall
-  head/taper envelope, not the fine thread-crest oscillation — real thread
-  ridges are a few px of amplitude against a silhouette whose width already
-  varies by tens of px along the shank from taper alone, so the peak
-  detector correctly reports "no reliable periodicity" rather than
-  fabricating a number. It works as intended on the unit-test/synthetic
-  suite (`tests/test_pitch.py`, `tests/test_measurement_pipeline.py`),
-  where thread amplitude isn't confounded with taper. Major-diameter
-  estimation and anomaly detection are unaffected — this only removes
-  pitch/pitch_mm from the output. Robust thread-crest profile extraction
-  (e.g. edge-based rather than fill-width-based) is Phase-4-scope work per
-  CLAUDE.md §11's explicit anticipation that this sub-problem could be
-  harder than it looks.
-- **Head/shank separation is a simple heuristic** (exclude a configurable
-  margin from the widest row, assumed to be the head), not a robust
-  axis/derotation system. This is flagged in `CLAUDE.md` §11 as a
-  sub-problem that may be harder than it looks on real MVTec images; Phase 1
-  ships the simplest defensible version rather than over-building it.
+- **Real MVTec-image measurements are still not dimensionally validated,
+  and this is intentional, not an oversight.** MVTec AD provides no physical
+  scale reference in its photos, so `/inspect/image` and `/inspect/video`
+  use a configured demonstration `MetricCalibration`
+  (`px_per_mm=32.4`, `source="demo_reference"`, `calibrated=False`) — every
+  `MeasurementResult` carries this fact in its `notes`. Phase 4 added a
+  second, **validated** calibration source
+  (`MetricCalibration.synthetic_reference`), but it is deliberately used
+  only within the measurement-validation harness
+  (`measurement/validate.py`), against synthetic images that actually
+  contain a rendered reference object of known size — never applied to real
+  MVTec images, which have no such object to calibrate against. Applying a
+  synthetic scale to real MVTec pixels would fabricate a number with no
+  relationship to those photos' actual scale; see
+  `calibration/metric_calibration.py`'s docstring for the full reasoning.
+- **Two pitch estimators are implemented and quantitatively compared**
+  (`PeakPitchEstimator`, `FFTPitchEstimator`) — see `docs/RESULTS.md` for
+  the full comparison table. **The surprising result: `FFTPitchEstimator`
+  wins on synthetic ground truth (100% coverage, small errors) but loses on
+  real MVTec images**, where it always reports a confident-looking estimate
+  from what is actually segmentation noise (values ranging 32-178px across
+  visually similar screws, all at `confidence=1.00`). `PeakPitchEstimator`
+  correctly reports "no reliable estimate" on those same images instead of
+  guessing. **`PeakPitchEstimator` remains the pipeline's deployed
+  default** because its failure mode (honest "I don't know") is safer for a
+  QC decision system than FFT's (confident and wrong) — this is a case
+  where evidence from the real target dataset overrides evidence from
+  synthetic data alone.
+- **Pitch estimation still does not reliably fire on real MVTec images**
+  (0/15 sampled test images produced a `PeakPitchEstimator` pitch estimate).
+  Root cause, confirmed rather than just diagnosed in Phase 4: the per-row
+  silhouette-width signal (`profile.compute_width_profile`) is dominated by
+  the screw's head/taper envelope and segmentation noise, not fine
+  thread-crest oscillation — this holds for *both* pitch estimators (see
+  above), so the fix belongs in upstream profile extraction (e.g.
+  edge-based rather than fill-width-based thread-crest isolation), not in
+  either estimator's own algorithm. Confirmed working correctly on synthetic
+  ground truth where the signal genuinely contains periodicity (see
+  `docs/RESULTS.md`'s validation table) — both estimators are sound, the
+  input signal on real images just doesn't carry the information they need.
+  Major-diameter estimation and anomaly detection are unaffected.
+- **A real bug in `isolate_thread_region` was found and fixed during Phase
+  4 validation**: its head-exclusion margin was computed relative to the
+  whole derotated frame length rather than the part's own foreground
+  extent, which silently inflated the measured major diameter to the head's
+  width whenever there was background margin around the part. Invisible in
+  Phase 1's own unit tests (screw nearly filled its test canvas); exposed by
+  the more realistic canvas layout in the Phase 4 synthetic-thread
+  validation harness. See `measurement/profile.py` and `docs/RESULTS.md`
+  for details — this is exactly the kind of thing a synthetic validation
+  harness with independently-known ground truth is supposed to catch.
 - **The ISO 965 tolerance table is a starter reference**, class 6g only, for
   M1.6–M12, cross-referenced against public engineering tables (not
   independently re-derived from the ISO 965-1 standard text). See
@@ -107,6 +131,14 @@ Two calibration concepts are kept deliberately separate (CLAUDE.md §4.1):
 - **Anomaly heatmap resolution is coarser than the original PaDiM paper**
   (28×28 patch grid instead of 56×56) — a documented CPU-feasibility
   tradeoff (see `anomaly/padim.py`).
+- **PatchCore (Phase 4 stretch) underperformed PaDiM** in this project's
+  configuration (0.7208 vs 0.7569 image-level AUROC on the MVTec "screw"
+  test set) — expected given it deliberately reuses PaDiM's ResNet18
+  feature representation rather than PatchCore's own WideResNet50 +
+  local-aggregation setup from the original paper, for a controlled
+  same-features comparison. PaDiM remains the model behind the live API.
+  See `docs/RESULTS.md` for the full reasoning and the published-paper
+  comparison numbers for both models.
 
 ## Dataset
 
@@ -194,6 +226,32 @@ cold-start, latency percentiles, throughput, peak memory) — see
 exported; scoring stays in NumPy — see `anomaly/padim.py` and
 `deployment/export_onnx.py` docstrings for why.
 
+### 6. Measurement validation against synthetic ground truth (Phase 4)
+
+```python
+from gaugevision.measurement.validate import run_validation_sweep, summarize, format_pitch_comparison_table
+records = run_validation_sweep()
+print(format_pitch_comparison_table(summarize(records)))
+```
+
+Runs the measurement pipeline against `data/synthetic_thread.py` samples
+with known ground-truth dimensions across a sweep of thread sizes and
+clean/blur/rotated conditions, and produces the `PeakPitchEstimator` vs
+`FFTPitchEstimator` comparison table — see `docs/RESULTS.md` for the full
+results and the (non-obvious) default-estimator decision this evidence
+drove.
+
+### 7. Fit the PatchCore anomaly model (Phase 4 stretch)
+
+```bash
+python -m gaugevision.anomaly.train_patchcore
+```
+
+Writes `models/patchcore_screw.npz` and prints the held-out test-set
+image-level AUROC, benchmarked against PaDiM in `docs/RESULTS.md`. Not
+wired into the live API — PaDiM remains the deployed model (see Known
+Limitations below for why).
+
 ## Docker
 
 ```bash
@@ -212,20 +270,23 @@ pytest tests/ -q
 
 Focused on deterministic contracts and processing stages: calibration math,
 segmentation/axis estimation on synthetic silhouettes, pitch estimation
-against synthetic periodic signals, the full measurement pipeline on a
-synthetic screw, decision-fusion logic against the ISO tolerance table,
-PaDiM's shared Mahalanobis-scoring/preprocessing math (the same functions
+against synthetic periodic signals (both estimators), the full measurement
+pipeline on synthetic screws (including the physically-dimensioned Phase 4
+generator with a rendered reference object), decision-fusion logic against
+the ISO tolerance table, PaDiM's and PatchCore's shared math (greedy
+coreset selection, Mahalanobis scoring, preprocessing — the same functions
 both the PyTorch and ONNX Runtime inference paths call), and the video
 pipeline (frame sampling interval, temporal aggregation, annotated-video
-writing) against a synthesized video — MVTec AD has no video assets, so this
-mirrors the synthetic-checkerboard precedent already used for lens
-calibration (§4.1a). The ONNX export/benchmark itself is exercised manually
-(see step 5 above) rather than in the fast CI suite, since it needs a fitted
-model checkpoint and downloads pretrained ImageNet weights.
+writing) against a synthesized video — MVTec AD has no video or dimensional
+ground-truth assets, so all of this mirrors the synthetic-checkerboard
+precedent already used for lens calibration (§4.1a). The ONNX
+export/benchmark and the full PaDiM/PatchCore training runs are exercised
+manually (see the numbered setup steps above) rather than in the fast CI
+suite, since they need dataset downloads, pretrained ImageNet weights, and
+in PatchCore's case several minutes of coreset selection.
 
-## What's next (Phase 4+)
+## What's next (Phase 5+)
 
-See `CLAUDE.md` §7 for the full phase plan: a synthetic-thread validation
-harness with the Peak-vs-FFT comparison table and a validated metric
-calibration source (Phase 4), CI + polish (Phase 5), and a
-minimal C++/ONNX Runtime edge-inference demo (Phase 6).
+See `CLAUDE.md` §7 for the full phase plan: CI + structured logging + final
+polish (Phase 5), and a minimal C++/ONNX Runtime edge-inference demo
+(Phase 6).

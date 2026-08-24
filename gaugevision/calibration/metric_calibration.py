@@ -20,9 +20,21 @@ class MetricCalibration:
     """Linear px<->mm scale plus provenance of where that scale came from.
 
     Phase 1 constructs this from a configured demonstration reference
-    (``source="demo_reference"``, ``validated=False``). Phase 4 replaces the
-    source with one validated against a synthetic/known-reference target
-    (``validated=True``) — same interface, no rewrite required.
+    (``source="demo_reference"``, ``validated=False``). Phase 4 adds a second
+    source (``synthetic_reference``, ``validated=True``) derived from a known
+    reference object in a *synthetic* scene — same interface, no rewrite
+    required.
+
+    Important scope note: the validated synthetic source proves the
+    calibration math and downstream measurement pipeline are accurate when a
+    real reference object of known size is actually present in the image
+    (see ``measurement/validate.py``). It is deliberately **not** substituted
+    into the live MVTec inference path (``api/main.py`` still uses
+    ``demo_reference``) — MVTec photos contain no physical reference object
+    at all (CLAUDE.md §3.2), so there is no real scale to validate against
+    for that specific dataset. Applying the synthetic scale to MVTec pixels
+    would fabricate a number with no relationship to those photos' actual
+    scale; that would be a regression in honesty, not an upgrade in rigor.
     """
 
     px_per_mm: float
@@ -63,6 +75,22 @@ class MetricCalibration:
         ``MeasurementResult.calibrated``.
         """
         return cls(px_per_mm=px_per_mm, source="demo_reference", validated=False)
+
+    @classmethod
+    def synthetic_reference(
+        cls, reference_length_px: float, reference_length_mm: float
+    ) -> MetricCalibration:
+        """Phase-4 validated calibration, derived from a known-size reference
+        object actually rendered into a synthetic scene (``data/
+        synthetic_thread.py``) — used only within the measurement validation
+        harness (``measurement/validate.py``), never for real MVTec images
+        (see the class docstring)."""
+        return cls.from_reference(
+            reference_length_px,
+            reference_length_mm,
+            source="synthetic_reference",
+            validated=True,
+        )
 
     def pixels_to_mm(self, value_px: float) -> float:
         return value_px / self.px_per_mm
