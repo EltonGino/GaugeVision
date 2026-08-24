@@ -40,7 +40,7 @@ class InspectionVerdict(BaseModel):
 
 def fuse_verdict(
     anomaly: AnomalyResult,
-    measurement: MeasurementResult,
+    measurement: MeasurementResult | None,
     inference_ms: float,
     thread_designation: str | None = None,
 ) -> InspectionVerdict:
@@ -49,7 +49,12 @@ def fuse_verdict(
 
     Args:
         anomaly: fitted-model anomaly score/heatmap/threshold for this image.
-        measurement: MeasurementResult from the measurement pipeline.
+        measurement: MeasurementResult from the measurement pipeline, or
+            None if the measurement pipeline failed on this image (e.g. a
+            video frame the segmentation stage couldn't process). When
+            None, the dimensional check is skipped rather than run against
+            a fabricated value — a pipeline failure is not evidence of an
+            out-of-tolerance part, so it must not be reported as one.
         inference_ms: total wall-clock inference time for this inspection.
         thread_designation: nominal thread size (e.g. "M6") to check against.
             If omitted, the nearest starter-table entry by measured major
@@ -68,29 +73,37 @@ def fuse_verdict(
             f"anomaly score {anomaly.score:.3f} within threshold {anomaly.threshold:.3f}"
         )
 
-    designation = thread_designation or nearest_designation(measurement.major_diameter_mm)
-    entry = ISO_965_TOLERANCE_TABLE[designation]
-    diameter = measurement.major_diameter_mm
-    if not (entry.major_diameter_min_mm <= diameter <= entry.major_diameter_max_mm):
-        failed_checks.append("major_diameter")
+    designation: str | None = None
+    if measurement is None:
         reasoning.append(
-            f"major diameter {diameter:.3f}mm outside {designation} class-"
-            f"{entry.tolerance_class} limits "
-            f"[{entry.major_diameter_min_mm:.3f}, {entry.major_diameter_max_mm:.3f}]mm"
+            "dimensional check skipped: measurement pipeline did not produce a "
+            "result for this image"
         )
     else:
-        reasoning.append(
-            f"major diameter {diameter:.3f}mm within {designation} class-"
-            f"{entry.tolerance_class} limits "
-            f"[{entry.major_diameter_min_mm:.3f}, {entry.major_diameter_max_mm:.3f}]mm"
-        )
+        designation = thread_designation or nearest_designation(measurement.major_diameter_mm)
+        entry = ISO_965_TOLERANCE_TABLE[designation]
+        diameter = measurement.major_diameter_mm
+        if not (entry.major_diameter_min_mm <= diameter <= entry.major_diameter_max_mm):
+            failed_checks.append("major_diameter")
+            reasoning.append(
+                f"major diameter {diameter:.3f}mm outside {designation} class-"
+                f"{entry.tolerance_class} limits "
+                f"[{entry.major_diameter_min_mm:.3f}, {entry.major_diameter_max_mm:.3f}]mm"
+            )
+        else:
+            reasoning.append(
+                f"major diameter {diameter:.3f}mm within {designation} class-"
+                f"{entry.tolerance_class} limits "
+                f"[{entry.major_diameter_min_mm:.3f}, {entry.major_diameter_max_mm:.3f}]mm"
+            )
 
-    if not measurement.calibrated:
-        reasoning.append(
-            f"dimensional check used calibration source '{measurement.calibration_source}' "
-            "(Phase-1 demonstration reference, not dimensionally validated) — "
-            "treat the dimensional check as illustrative, not certified"
-        )
+        if not measurement.calibrated:
+            reasoning.append(
+                f"dimensional check used calibration source "
+                f"'{measurement.calibration_source}' (Phase-1 demonstration "
+                "reference, not dimensionally validated) — treat the "
+                "dimensional check as illustrative, not certified"
+            )
 
     reasoning.append(ISO_DISCLAIMER)
 
@@ -101,14 +114,14 @@ def fuse_verdict(
         anomaly_score=anomaly.score,
         anomaly_threshold=anomaly.threshold,
         measurements={
-            "major_diameter_mm": measurement.major_diameter_mm,
-            "pitch_mm": measurement.pitch_mm,
+            "major_diameter_mm": measurement.major_diameter_mm if measurement else None,
+            "pitch_mm": measurement.pitch_mm if measurement else None,
         },
         failed_checks=failed_checks,
         reasoning=reasoning,
-        calibration_source=measurement.calibration_source,
-        calibrated=measurement.calibrated,
-        measurement_confidence=measurement.confidence,
+        calibration_source=measurement.calibration_source if measurement else "n/a",
+        calibrated=measurement.calibrated if measurement else False,
+        measurement_confidence=measurement.confidence if measurement else 0.0,
         matched_thread_designation=designation,
         inference_ms=inference_ms,
     )

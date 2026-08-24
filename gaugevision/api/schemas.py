@@ -26,3 +26,22 @@ class ModelInfoResponse(BaseModel):
 class InspectImageResponse(BaseModel):
     verdict: InspectionVerdict
     anomaly_heatmap_png_base64: str
+
+
+class FrameVerdict(BaseModel):
+    frame_index: int
+    timestamp_sec: float
+    verdict: InspectionVerdict
+
+
+class InspectVideoResponse(BaseModel):
+    overall_verdict: str
+    overall_failed_checks: list[str]
+    frame_results: list[FrameVerdict]
+    n_frames_sampled: int
+    source_fps: float
+    sample_interval_frames: int
+    inspection_throughput_fps: float
+    notes: list[str]
+    annotated_video_base64: str
+    annotated_video_content_type: str = "video/mp4"

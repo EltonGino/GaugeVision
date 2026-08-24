@@ -12,14 +12,15 @@ detection, optimized inference, API/container serving) behind that kind of
 industrial-inspection system, using an openly available screw dataset instead
 of pretending to have access to proprietary hardware or data.
 
-## Current status: Phase 2 — ONNX export + optimized inference benchmark
+## Current status: Phase 3 — video input
 
 The full architecture (see below) is wired end-to-end on stable interfaces:
 `image → measurement pipeline → anomaly detection → decision fusion → FastAPI
-→ Docker → Gradio` (Phase 1), plus a benchmarked PyTorch-vs-ONNX-Runtime CPU
-inference path (Phase 2, see `docs/RESULTS.md`). Validation depth
-(synthetic-ground-truth measurement error, a second pitch-estimation
-strategy, PatchCore, video input) is still layered in over the remaining
+→ Docker → Gradio` (Phase 1), a benchmarked PyTorch-vs-ONNX-Runtime CPU
+inference path (Phase 2, see `docs/RESULTS.md`), and file-based video input
+with an annotated output video and temporal aggregation (Phase 3, §4.7
+below). Validation depth (synthetic-ground-truth measurement error, a second
+pitch-estimation strategy, PatchCore) is still layered in over the remaining
 phases described in `CLAUDE.md`.
 
 ## Architecture
@@ -40,6 +41,16 @@ image ──────────▶│  PaDiM: frozen ResNet18 + per-patch  
 
 Gradio UI ──HTTP──▶ FastAPI (/inspect/image, /health, /model/info) ──▶ pipeline above
 ```
+
+**Video input** (CLAUDE.md §4.7, Phase 3) is not a separate algorithm — it's
+the pipeline above run per sampled frame, plus temporal aggregation:
+`video file → OpenCV frame sampling (~2 samples/sec by default) → the same
+measurement + anomaly + decision pipeline per frame → worst-case aggregation
+(NO_GO if any sampled frame fails a check) → annotated output video`. Served
+via `POST /inspect/video`, which reuses `run_measurement_pipeline`, `PaDiM.
+predict`, and `fuse_verdict` directly rather than a parallel implementation.
+**This is file-based video input, not live/streaming ingestion** — there is
+no RTSP or real-time camera path here (that's a stretch goal, CLAUDE.md §9).
 
 Two calibration concepts are kept deliberately separate (CLAUDE.md §4.1):
 
@@ -156,6 +167,8 @@ uvicorn gaugevision.api.main:app --reload
 - `GET /health`
 - `GET /model/info`
 - `POST /inspect/image` (multipart file upload)
+- `POST /inspect/video` (multipart file upload — video input, not streaming;
+  see §4.7 below)
 
 ### 4. Run the Gradio demo
 
@@ -163,8 +176,9 @@ uvicorn gaugevision.api.main:app --reload
 python -m gaugevision.app.demo
 ```
 
-Open http://localhost:7860. The UI calls the FastAPI service over HTTP — set
-`GAUGEVISION_API_URL` if the API isn't on `localhost:8000`.
+Open http://localhost:7860. The UI has an Image tab and a Video tab; both
+call the FastAPI service over HTTP — set `GAUGEVISION_API_URL` if the API
+isn't on `localhost:8000`.
 
 ### 5. ONNX export + inference benchmark (Phase 2)
 
@@ -199,16 +213,19 @@ pytest tests/ -q
 Focused on deterministic contracts and processing stages: calibration math,
 segmentation/axis estimation on synthetic silhouettes, pitch estimation
 against synthetic periodic signals, the full measurement pipeline on a
-synthetic screw, decision-fusion logic against the ISO tolerance table, and
+synthetic screw, decision-fusion logic against the ISO tolerance table,
 PaDiM's shared Mahalanobis-scoring/preprocessing math (the same functions
-both the PyTorch and ONNX Runtime inference paths call). The ONNX
-export/benchmark itself is exercised manually (see step 5 above) rather than
-in the fast CI suite, since it needs a fitted model checkpoint and downloads
-pretrained ImageNet weights.
+both the PyTorch and ONNX Runtime inference paths call), and the video
+pipeline (frame sampling interval, temporal aggregation, annotated-video
+writing) against a synthesized video — MVTec AD has no video assets, so this
+mirrors the synthetic-checkerboard precedent already used for lens
+calibration (§4.1a). The ONNX export/benchmark itself is exercised manually
+(see step 5 above) rather than in the fast CI suite, since it needs a fitted
+model checkpoint and downloads pretrained ImageNet weights.
 
-## What's next (Phase 3+)
+## What's next (Phase 4+)
 
-See `CLAUDE.md` §7 for the full phase plan: video input (Phase 3), a
-synthetic-thread validation harness with the Peak-vs-FFT comparison table and
-a validated metric calibration source (Phase 4), CI + polish (Phase 5), and a
+See `CLAUDE.md` §7 for the full phase plan: a synthetic-thread validation
+harness with the Peak-vs-FFT comparison table and a validated metric
+calibration source (Phase 4), CI + polish (Phase 5), and a
 minimal C++/ONNX Runtime edge-inference demo (Phase 6).

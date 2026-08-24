@@ -104,6 +104,37 @@ python -m gaugevision.deployment.export_onnx
 python -m gaugevision.deployment.benchmark
 ```
 
-## Video pipeline
+## Video pipeline (Phase 3)
 
-Not started — Phase 3.
+Not a benchmark section like the ones above — video input reuses the exact
+same measurement/anomaly/decision functions the image endpoint calls
+(`run_measurement_pipeline`, `PaDiM.predict`, `fuse_verdict`), per frame, so
+its accuracy is whatever those already-benchmarked components produce. What
+was actually verified end-to-end (`POST /inspect/video`, both directly and
+through the Gradio UI, against `gaugevision/video/pipeline.py`):
+
+- A 10-second, 100-frame test video assembled from 10 real MVTec "screw" test
+  images (5 normal, 5 defective) was submitted to `/inspect/video`.
+- Frame sampling at the default ~2 samples/sec (interval derived from source
+  FPS) produced 50 sampled frames; **measured inspection throughput ~52
+  frames/sec** — consistent with the per-image PyTorch CPU latency in the
+  Phase 2 benchmark above (~16ms/frame), since video inspection is that same
+  per-frame call in a loop, not a separate optimized path.
+- Worst-case temporal aggregation (`NO_GO` if any sampled frame fails a
+  check) correctly flagged the assembled video `NO_GO` with both
+  `anomaly_score` and `major_diameter` in `overall_failed_checks`, matching
+  the per-frame verdicts.
+- The annotated output video (heatmap blended in, verdict/anomaly/diameter/
+  pitch/FPS/failed-checks text overlaid) was decoded and visually inspected
+  frame-by-frame — overlays render legibly and match the JSON verdict for
+  that frame.
+- `tests/test_video_pipeline.py` covers frame-sampling-interval math and the
+  orchestration (aggregation, output-video writing, the
+  measurement-pipeline-failure fallback) against a synthesized video, since
+  MVTec AD has no video assets of its own.
+
+No dimensional-accuracy or defect-detection-rate claim is made for video
+specifically — that's inherited entirely from the Phase 1/2 measurement and
+anomaly-detection numbers above, with the same limitations (notably: pitch
+estimation not firing reliably on real screw images, see the README's
+Known Limitations section).

@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import base64
 import logging
+import tempfile
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -20,13 +22,16 @@ from fastapi.responses import JSONResponse
 from gaugevision import config
 from gaugevision.anomaly.padim import PaDiM
 from gaugevision.api.schemas import (
+    FrameVerdict,
     HealthResponse,
     InspectImageResponse,
+    InspectVideoResponse,
     ModelInfoResponse,
 )
 from gaugevision.calibration.metric_calibration import MetricCalibration
 from gaugevision.decision.fuse import fuse_verdict
 from gaugevision.measurement.pipeline import run_measurement_pipeline
+from gaugevision.video.pipeline import run_video_inspection
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -110,7 +115,7 @@ def model_info() -> ModelInfoResponse:
         pitch_estimator="PeakPitchEstimator",
         calibration_source=calibration.source,
         calibration_validated=calibration.validated,
-        phase="Phase 1 — vertical slice",
+        phase="Phase 3 — video input",
     )
 
 
@@ -140,6 +145,59 @@ async def inspect_image(file: UploadFile = File(...)) -> InspectImageResponse:  
     heatmap_b64 = _encode_heatmap_png_base64(image, anomaly.heatmap)
 
     return InspectImageResponse(verdict=verdict, anomaly_heatmap_png_base64=heatmap_b64)
+
+
+@app.post("/inspect/video", response_model=InspectVideoResponse)
+async def inspect_video(file: UploadFile = File(...)) -> InspectVideoResponse:  # noqa: B008
+    """Video input (file-based), not streaming — CLAUDE.md §4.7.
+
+    Samples frames from the uploaded video file, runs the same per-frame
+    measurement/anomaly/decision pipeline as ``/inspect/image``, and returns
+    a temporally-aggregated verdict plus an annotated output video
+    (heatmap, measurements, FPS, verdict, failing-check reason per sampled
+    frame) as base64-encoded MP4.
+    """
+    model = _get_model()
+    data = await file.read()
+
+    suffix = Path(file.filename or "upload.mp4").suffix or ".mp4"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        input_path = Path(tmpdir) / f"input{suffix}"
+        output_path = Path(tmpdir) / "annotated.mp4"
+        input_path.write_bytes(data)
+
+        calibration = MetricCalibration.demo_reference(config.DEMO_CALIBRATION_PX_PER_MM)
+        try:
+            result = run_video_inspection(
+                str(input_path),
+                model=model,
+                calibration=calibration,
+                output_path=str(output_path),
+                head_margin_fraction=config.THREAD_HEAD_MARGIN_FRACTION,
+            )
+        except RuntimeError as e:
+            raise HTTPException(status_code=422, detail=f"video inspection failed: {e}")
+
+        video_b64 = base64.b64encode(output_path.read_bytes()).decode("ascii")
+
+    return InspectVideoResponse(
+        overall_verdict=result.overall_verdict,
+        overall_failed_checks=result.overall_failed_checks,
+        frame_results=[
+            FrameVerdict(
+                frame_index=fr.frame_index,
+                timestamp_sec=fr.timestamp_sec,
+                verdict=fr.verdict,
+            )
+            for fr in result.frame_results
+        ],
+        n_frames_sampled=result.n_frames_sampled,
+        source_fps=result.source_fps,
+        sample_interval_frames=result.sample_interval_frames,
+        inspection_throughput_fps=result.inspection_throughput_fps,
+        notes=result.notes,
+        annotated_video_base64=video_b64,
+    )
 
 
 @app.exception_handler(Exception)
