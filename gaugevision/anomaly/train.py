@@ -23,6 +23,7 @@ from gaugevision.data.mvtec_loader import (
     test_samples,
     train_normal_samples,
 )
+from gaugevision.logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,6 @@ def fit_and_save(
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    configure_logging()
     result = fit_and_save()
     print(result)

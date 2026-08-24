@@ -1,4 +1,4 @@
-# GaugeVision — Phase 1 dependencies
+# GaugeVision dependencies
 # Python 3.11 required (PyTorch does not yet support newer CPython releases).
 
 # Core numerics / classical CV

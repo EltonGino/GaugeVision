@@ -28,6 +28,7 @@ import onnx
 import torch
 
 from gaugevision.anomaly.padim import PaDiMBackbone
+from gaugevision.logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,6 @@ def export_backbone(
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    configure_logging()
     result = export_backbone()
     print(result)

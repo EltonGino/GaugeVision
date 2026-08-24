@@ -29,6 +29,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from gaugevision.logging_config import configure_logging
+
 logger = logging.getLogger(__name__)
 
 N_ITERS = 50
@@ -148,6 +150,6 @@ def run_benchmark() -> dict:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    configure_logging()
     result = run_benchmark()
     print(json.dumps(result, indent=2))

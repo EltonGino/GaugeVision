@@ -30,10 +30,11 @@ from gaugevision.api.schemas import (
 )
 from gaugevision.calibration.metric_calibration import MetricCalibration
 from gaugevision.decision.fuse import fuse_verdict
+from gaugevision.logging_config import configure_logging
 from gaugevision.measurement.pipeline import run_measurement_pipeline
 from gaugevision.video.pipeline import run_video_inspection
 
-logging.basicConfig(level=logging.INFO)
+configure_logging()
 logger = logging.getLogger(__name__)
 
 _state: dict = {"model": None}
@@ -144,6 +145,16 @@ async def inspect_image(file: UploadFile = File(...)) -> InspectImageResponse:  
     verdict = fuse_verdict(anomaly=anomaly, measurement=measurement, inference_ms=inference_ms)
     heatmap_b64 = _encode_heatmap_png_base64(image, anomaly.heatmap)
 
+    logger.info(
+        "image inspection complete",
+        extra={
+            "verdict": verdict.verdict,
+            "failed_checks": verdict.failed_checks,
+            "anomaly_score": verdict.anomaly_score,
+            "inference_ms": inference_ms,
+        },
+    )
+
     return InspectImageResponse(verdict=verdict, anomaly_heatmap_png_base64=heatmap_b64)
 
 
@@ -179,6 +190,16 @@ async def inspect_video(file: UploadFile = File(...)) -> InspectVideoResponse:  
             raise HTTPException(status_code=422, detail=f"video inspection failed: {e}")
 
         video_b64 = base64.b64encode(output_path.read_bytes()).decode("ascii")
+
+    logger.info(
+        "video inspection complete",
+        extra={
+            "overall_verdict": result.overall_verdict,
+            "overall_failed_checks": result.overall_failed_checks,
+            "n_frames_sampled": result.n_frames_sampled,
+            "inspection_throughput_fps": result.inspection_throughput_fps,
+        },
+    )
 
     return InspectVideoResponse(
         overall_verdict=result.overall_verdict,
