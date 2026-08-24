@@ -77,6 +77,77 @@ def _concat_multiscale_features(
     return torch.cat([f1_down, f2, f3_up], dim=1)
 
 
+class PaDiMBackbone(nn.Module):
+    """Feature-extraction half of PaDiM as a single exportable module.
+
+    Combines ``_ResNet18FeatureExtractor`` and ``_concat_multiscale_features``
+    into one ``forward`` so the same graph used at PyTorch inference time is
+    exactly what gets traced for ONNX export (CLAUDE.md §4.4) — there is no
+    separate "export path" that could silently diverge from the inference
+    path. Only this module is exported to ONNX; PaDiM's Gaussian-distribution
+    Mahalanobis scoring (``mahalanobis_score`` below) stays in NumPy, per the
+    CLAUDE.md §4.4 scope note that PaDiM's scoring logic may not translate
+    cleanly through the ONNX exporter and a backbone/scoring split is an
+    acceptable architecture.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.extractor = _ResNet18FeatureExtractor()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        f1, f2, f3 = self.extractor(x)
+        return _concat_multiscale_features(f1, f2, f3)
+
+
+def preprocess(
+    image: np.ndarray, input_size: tuple[int, int] = (224, 224)
+) -> torch.Tensor:
+    """Grayscale/BGR uint8 image -> normalized 3-channel model input tensor.
+
+    Shared by both the PyTorch and ONNX Runtime inference paths so an
+    output-equivalence benchmark (CLAUDE.md §4.4) isolates the comparison to
+    "does the exported graph match the original graph," not to incidental
+    preprocessing differences between the two paths.
+    """
+    if image.ndim == 2:
+        rgb = np.stack([image] * 3, axis=-1)
+    elif image.shape[2] == 1:
+        rgb = np.repeat(image, 3, axis=2)
+    else:
+        rgb = image[:, :, ::-1]  # assume BGR (OpenCV) -> RGB
+
+    tensor = torch.from_numpy(rgb.copy()).permute(2, 0, 1).float() / 255.0
+    tensor = tensor.unsqueeze(0)
+    tensor = F.interpolate(tensor, size=input_size, mode="bilinear", align_corners=False)
+    tensor = (tensor - _IMAGENET_MEAN) / _IMAGENET_STD
+    return tensor
+
+
+def mahalanobis_score(
+    embedding: np.ndarray, stats: PaDiMStats
+) -> tuple[float, np.ndarray]:
+    """Per-patch Mahalanobis distance against fitted PaDiM statistics.
+
+    Args:
+        embedding: (n_patches, total_dim) raw concatenated backbone features
+            for one image, pre feature-selection (same shape either backend's
+            backbone forward pass produces).
+        stats: fitted PaDiMStats (mean/cov_inv/feature_indices).
+
+    Returns:
+        (image_level_score, per_patch_distance_map (h, w)).
+    """
+    selected = embedding[:, stats.feature_indices]  # (n_patches, d)
+    diff = selected - stats.mean
+    dist_sq = np.einsum("pi,pij,pj->p", diff, stats.cov_inv, diff)
+    dist = np.sqrt(np.clip(dist_sq, 0, None))
+
+    h, w = stats.grid_size
+    dist_map = dist.reshape(h, w)
+    return float(dist_map.max()), dist_map
+
+
 @dataclass
 class PaDiMStats:
     """Fitted per-patch-location Gaussian parameters."""
@@ -86,6 +157,25 @@ class PaDiMStats:
     feature_indices: np.ndarray  # (d,) indices into the full concatenated feature dim
     grid_size: tuple[int, int]  # (H_patch, W_patch)
     input_size: tuple[int, int]  # (H, W) the model expects
+
+
+def load_stats(path: str) -> tuple[PaDiMStats, float | None]:
+    """Load fitted PaDiMStats + threshold from a PaDiM.save() checkpoint.
+
+    Shared by ``PaDiM.load`` (PyTorch path) and
+    ``deployment.onnx_infer.ONNXPaDiM`` (ONNX Runtime path) — neither backend
+    needs a backbone to read these statistics, only a fitted model checkpoint.
+    """
+    data = np.load(path)
+    stats = PaDiMStats(
+        mean=data["mean"],
+        cov_inv=data["cov_inv"],
+        feature_indices=data["feature_indices"],
+        grid_size=tuple(int(v) for v in data["grid_size"]),
+        input_size=tuple(int(v) for v in data["input_size"]),
+    )
+    threshold = float(data["threshold"][0])
+    return stats, (None if np.isnan(threshold) else threshold)
 
 
 class PaDiM:
@@ -102,31 +192,14 @@ class PaDiM:
         self.input_size = input_size
         self.seed = seed
         self.device = torch.device(device)
-        self.extractor = _ResNet18FeatureExtractor().to(self.device)
+        self.backbone = PaDiMBackbone().to(self.device)
         self.stats: PaDiMStats | None = None
 
-    def _preprocess(self, image: np.ndarray) -> torch.Tensor:
-        """Grayscale/BGR uint8 image -> normalized 3-channel model input tensor."""
-        if image.ndim == 2:
-            rgb = np.stack([image] * 3, axis=-1)
-        elif image.shape[2] == 1:
-            rgb = np.repeat(image, 3, axis=2)
-        else:
-            rgb = image[:, :, ::-1]  # assume BGR (OpenCV) -> RGB
-
-        tensor = torch.from_numpy(rgb.copy()).permute(2, 0, 1).float() / 255.0
-        tensor = tensor.unsqueeze(0)
-        tensor = F.interpolate(
-            tensor, size=self.input_size, mode="bilinear", align_corners=False
-        )
-        tensor = (tensor - _IMAGENET_MEAN) / _IMAGENET_STD
-        return tensor.to(self.device)
-
+    @torch.no_grad()
     def _extract_embedding(self, image: np.ndarray) -> torch.Tensor:
         """Returns (n_patches, total_dim) feature embedding for one image."""
-        x = self._preprocess(image)
-        f1, f2, f3 = self.extractor(x)
-        embedding = _concat_multiscale_features(f1, f2, f3)  # (1, C, H, W)
+        x = preprocess(image, self.input_size).to(self.device)
+        embedding = self.backbone(x)  # (1, C, H, W)
         _, c, h, w = embedding.shape
         return embedding.reshape(1, c, h * w).permute(0, 2, 1).squeeze(0), (h, w)
 
@@ -187,20 +260,11 @@ class PaDiM:
             raise RuntimeError(
                 f"grid size mismatch: fitted on {self.stats.grid_size}, got {grid_size}"
             )
-        emb = emb.numpy()[:, self.stats.feature_indices]  # (n_patches, d)
-
-        diff = emb - self.stats.mean  # (n_patches, d)
-        # Mahalanobis distance per patch: sqrt(diff^T @ cov_inv @ diff)
-        dist_sq = np.einsum("pi,pij,pj->p", diff, self.stats.cov_inv, diff)
-        dist = np.sqrt(np.clip(dist_sq, 0, None))
-
-        h, w = grid_size
-        dist_map = dist.reshape(h, w)
+        score, dist_map = mahalanobis_score(emb.numpy(), self.stats)
 
         orig_h, orig_w = image.shape[:2]
         heatmap = _resize_map(dist_map, (orig_h, orig_w))
 
-        score = float(dist_map.max())
         threshold = self.threshold_ if threshold is None else threshold
         return AnomalyResult(
             score=score,
@@ -236,15 +300,8 @@ class PaDiM:
             seed=int(data["seed"][0]),
             device=device,
         )
-        model.stats = PaDiMStats(
-            mean=data["mean"],
-            cov_inv=data["cov_inv"],
-            feature_indices=data["feature_indices"],
-            grid_size=tuple(int(v) for v in data["grid_size"]),
-            input_size=tuple(int(v) for v in data["input_size"]),
-        )
-        threshold = float(data["threshold"][0])
-        if not np.isnan(threshold):
+        model.stats, threshold = load_stats(path)
+        if threshold is not None:
             model.threshold_ = threshold
         return model
 

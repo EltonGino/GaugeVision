@@ -13,6 +13,10 @@ scikit-learn>=1.4
 torch>=2.2
 torchvision>=0.17
 
+# Optimized inference (Phase 2)
+onnx>=1.15
+onnxruntime>=1.17
+
 # Data models / config
 pydantic>=2.6
 

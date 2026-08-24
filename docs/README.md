@@ -12,15 +12,15 @@ detection, optimized inference, API/container serving) behind that kind of
 industrial-inspection system, using an openly available screw dataset instead
 of pretending to have access to proprietary hardware or data.
 
-## Current status: Phase 1 — working vertical slice
+## Current status: Phase 2 — ONNX export + optimized inference benchmark
 
 The full architecture (see below) is wired end-to-end on stable interfaces:
 `image → measurement pipeline → anomaly detection → decision fusion → FastAPI
-→ Docker → Gradio`. Validation depth (synthetic-ground-truth measurement
-error, a second pitch-estimation strategy, PatchCore, ONNX export/benchmark,
-video input) is layered in over the phases described in `CLAUDE.md` — Phase 1
-ships one correct-but-simple implementation of every pipeline stage rather
-than a deep validation of any single one.
+→ Docker → Gradio` (Phase 1), plus a benchmarked PyTorch-vs-ONNX-Runtime CPU
+inference path (Phase 2, see `docs/RESULTS.md`). Validation depth
+(synthetic-ground-truth measurement error, a second pitch-estimation
+strategy, PatchCore, video input) is still layered in over the remaining
+phases described in `CLAUDE.md`.
 
 ## Architecture
 
@@ -166,6 +166,20 @@ python -m gaugevision.app.demo
 Open http://localhost:7860. The UI calls the FastAPI service over HTTP — set
 `GAUGEVISION_API_URL` if the API isn't on `localhost:8000`.
 
+### 5. ONNX export + inference benchmark (Phase 2)
+
+```bash
+python -m gaugevision.deployment.export_onnx
+python -m gaugevision.deployment.benchmark
+```
+
+Exports the PaDiM backbone to `models/padim_backbone.onnx`, then benchmarks
+PyTorch vs ONNX Runtime CPU inference (output equivalence, model size,
+cold-start, latency percentiles, throughput, peak memory) — see
+`docs/RESULTS.md` for the numbers this produced. Only the backbone is
+exported; scoring stays in NumPy — see `anomaly/padim.py` and
+`deployment/export_onnx.py` docstrings for why.
+
 ## Docker
 
 ```bash
@@ -185,12 +199,16 @@ pytest tests/ -q
 Focused on deterministic contracts and processing stages: calibration math,
 segmentation/axis estimation on synthetic silhouettes, pitch estimation
 against synthetic periodic signals, the full measurement pipeline on a
-synthetic screw, and decision-fusion logic against the ISO tolerance table.
+synthetic screw, decision-fusion logic against the ISO tolerance table, and
+PaDiM's shared Mahalanobis-scoring/preprocessing math (the same functions
+both the PyTorch and ONNX Runtime inference paths call). The ONNX
+export/benchmark itself is exercised manually (see step 5 above) rather than
+in the fast CI suite, since it needs a fitted model checkpoint and downloads
+pretrained ImageNet weights.
 
-## What's next (Phase 2+)
+## What's next (Phase 3+)
 
-See `CLAUDE.md` §7 for the full phase plan: ONNX export + benchmarked
-PyTorch-vs-ONNX-Runtime inference (Phase 2), video input (Phase 3), a
+See `CLAUDE.md` §7 for the full phase plan: video input (Phase 3), a
 synthetic-thread validation harness with the Peak-vs-FFT comparison table and
 a validated metric calibration source (Phase 4), CI + polish (Phase 5), and a
 minimal C++/ONNX Runtime edge-inference demo (Phase 6).
