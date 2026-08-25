@@ -12,20 +12,33 @@ detection, optimized inference, API/container serving) behind that kind of
 industrial-inspection system, using an openly available screw dataset instead
 of pretending to have access to proprietary hardware or data.
 
-## Current status: Phase 4 — depth pass
+## Current status: all six CLAUDE.md phases implemented
 
-The full architecture is wired end-to-end: `image → measurement pipeline →
-anomaly detection → decision fusion → FastAPI → Docker → Gradio` (Phase 1),
-a benchmarked PyTorch-vs-ONNX-Runtime CPU inference path (Phase 2), and
-file-based video input with an annotated output video and temporal
-aggregation (Phase 3). Phase 4 adds the validation depth CLAUDE.md scoped for
-this stage: a synthetic thread generator with known ground truth,
-`FFTPitchEstimator` implemented and quantitatively compared against
-`PeakPitchEstimator`, a PatchCore anomaly-detection stretch model benchmarked
-against PaDiM, and a validated calibration source used within that
-validation harness. **All real numbers are in `docs/RESULTS.md`** — several
-Phase 4 findings genuinely changed decisions rather than just confirming
-Phase 1/2/3 choices (see Known Limitations below).
+- **Phase 1** — vertical slice: `image → measurement pipeline → anomaly
+  detection → decision fusion → FastAPI → Docker → Gradio`.
+- **Phase 2** — PaDiM backbone exported to ONNX, benchmarked against PyTorch
+  CPU inference (output equivalence, size, latency, throughput, memory).
+- **Phase 3** — file-based video input, annotated output video, temporal
+  aggregation, `POST /inspect/video`.
+- **Phase 4** — depth pass: a synthetic thread generator with known ground
+  truth, `FFTPitchEstimator` implemented and quantitatively compared
+  against `PeakPitchEstimator`, a PatchCore stretch model benchmarked
+  against PaDiM, and a validated calibration source used within that
+  validation harness (never applied to real MVTec images — see Known
+  Limitations).
+- **Phase 5** — structured JSON logging, CI.
+- **Phase 6** — a minimal C++/ONNX Runtime edge-inference demo
+  (`edge/cpp/`), verified end-to-end against real MVTec images.
+
+**All real numbers are in `docs/RESULTS.md`.** Several Phase 4 findings
+genuinely changed decisions rather than just confirming earlier-phase
+choices — see Known Limitations below before trusting any specific number.
+
+One Phase 5 item is intentionally not done here: CLAUDE.md's "demo
+recording" is a human presentation artifact (screen capture + narration
+choices about what to highlight), not something to fabricate — it's a
+task for whoever is presenting this project, not something this session
+can autonomously produce.
 
 ## Architecture
 
@@ -67,6 +80,16 @@ Two calibration concepts are kept deliberately separate (CLAUDE.md §4.1):
   Every pixel↔mm conversion in the measurement pipeline routes through the
   `MetricCalibration` class; no bare pixel/constant division is scattered
   through measurement code.
+
+**The C++ edge demo** (`edge/cpp/`, CLAUDE.md §4.8, Phase 6) is a minimal,
+separate proof that inference runs outside the Python runtime — not a port
+of the pipeline. It loads the Phase 2 ONNX-exported PaDiM backbone via the
+ONNX Runtime C++ API, runs the same Mahalanobis-distance scoring math the
+Python `PaDiM` class uses (against statistics exported to a small custom
+binary format, since parsing NumPy's `.npz` in C++ is more machinery than
+this minimal demo needs), and prints an anomaly score + latency for one
+image. See `edge/cpp/README.md` for build/run instructions and
+`docs/RESULTS.md` for a real Python-vs-C++ score comparison on MVTec images.
 
 ## Known limitations (read before trusting a number)
 
@@ -285,8 +308,23 @@ manually (see the numbered setup steps above) rather than in the fast CI
 suite, since they need dataset downloads, pretrained ImageNet weights, and
 in PatchCore's case several minutes of coreset selection.
 
-## What's next (Phase 5+)
+## What's next
 
-See `CLAUDE.md` §7 for the full phase plan: CI + structured logging + final
-polish (Phase 5), and a minimal C++/ONNX Runtime edge-inference demo
-(Phase 6).
+All six CLAUDE.md phases are implemented. What's left is CLAUDE.md §9's
+explicit stretch goals, pursued only if there's appetite for more beyond
+the core build:
+
+- TensorRT / real Jetson hardware benchmarking, if hardware becomes
+  available.
+- Kubernetes deployment manifest, MLflow experiment tracking.
+- Real-time streaming ingestion (RTSP/GStreamer) beyond the file-based
+  video input this project implements.
+- Extending the ISO 965 starter tolerance table to more sizes/tolerance
+  classes.
+- A second MVTec category (e.g. "metal_nut") to show the pipeline
+  generalizes beyond screws specifically.
+- Fixing the pitch-estimation root cause on real MVTec images (edge-based
+  thread-crest profile extraction, replacing the fill-width approach both
+  estimators currently sit on top of) — see Known Limitations above.
+- A demo recording, which needs a human's presentation/narration choices
+  and isn't something this session produces autonomously.
